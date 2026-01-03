@@ -3,19 +3,14 @@ from pathlib import Path
 
 import streamlit as st
 import folium
-from folium.features import CustomIcon
+from folium.features import DivIcon
 from streamlit_folium import st_folium
 
 st.set_page_config(page_title="Berlin – Einrichtungen & Radiozone", layout="wide")
 
-# -----------------------------
-# Konfiguration / Defaults
-# -----------------------------
-DEFAULT_CENTER = (52.52, 13.405)  # Berlin Mitte
+DEFAULT_CENTER = (52.5200, 13.4050)
 DEFAULT_ZOOM = 11
-
 DATA_DIR = Path("data")
-ICON_PATH = Path("icons") / "lighthouse.svg"
 
 LAYER_SPECS = [
     ("Feuerwachen", DATA_DIR / "feuerwehr.geojson"),
@@ -23,69 +18,69 @@ LAYER_SPECS = [
     ("Schulen", DATA_DIR / "schulen.geojson"),
 ]
 
-# -----------------------------
-# UI
-# -----------------------------
-st.title("Interaktive Karte Berlin: Feuerwachen, Polizeiwachen, Schulen + Radiozone")
+# Inline-SVG (Leuchtturm) als DivIcon -> keine Abhängigkeit von icons/ im Deploy
+LIGHTHOUSE_SVG = """
+<div style="
+  transform: translate(-12px,-24px);
+  width:24px;height:24px;
+">
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24">
+  <path fill="#111" d="M11 2h2v2h-2V2zm-1 3h4l1 4H9l1-4zm-1 5h6l1 12H8L9 10zm2 2v8h2v-8h-2z"/>
+  <path fill="#111" d="M4 9l3-2v2L4 11V9zm16 0v2l-3-2V7l3 2z"/>
+</svg>
+</div>
+"""
 
-with st.sidebar:
-    st.header("Einstellungen")
-
-    radius_km = st.slider("Radiozone (Radius in km)", min_value=1, max_value=20, value=3, step=1)
-
-    st.caption("Zentrum der Radiozone per Klick auf die Karte setzen (siehe Karte).")
-    if st.button("Zentrum zurücksetzen"):
-        st.session_state["center"] = DEFAULT_CENTER
-
-# Session-State für Zentrum
-if "center" not in st.session_state:
-    st.session_state["center"] = DEFAULT_CENTER
-
-# -----------------------------
-# Hilfsfunktionen
-# -----------------------------
 def load_geojson(path: Path):
     if not path.exists():
-        return None, f"Datei nicht gefunden: {path}"
+        return None, f"Datei nicht gefunden: {path} (liegt sie wirklich im GitHub-Repo?)"
     try:
         return json.loads(path.read_text(encoding="utf-8")), None
     except Exception as e:
         return None, f"Fehler beim Laden {path}: {e}"
 
-def add_geojson_markers(m: folium.Map, geojson_obj: dict, layer_name: str, icon: CustomIcon):
-    layer = folium.FeatureGroup(name=layer_name, show=True)
-    features = geojson_obj.get("features", [])
-
-    for feat in features:
-        geom = feat.get("geometry", {})
+def add_points(m: folium.Map, geo: dict, layer_name: str):
+    fg = folium.FeatureGroup(name=layer_name, show=True)
+    for feat in geo.get("features", []):
+        geom = feat.get("geometry", {}) or {}
         props = feat.get("properties", {}) or {}
 
         if geom.get("type") != "Point":
             continue
 
-        # GeoJSON: [lon, lat]
         coords = geom.get("coordinates", [])
         if not coords or len(coords) < 2:
             continue
-        lon, lat = coords[0], coords[1]
 
+        lon, lat = coords[0], coords[1]
         label = props.get("name") or props.get("titel") or props.get("title") or ""
-        popup_html = f"<strong>{layer_name}</strong><br>{label}"
 
         folium.Marker(
             location=(lat, lon),
-            icon=icon,
-            popup=folium.Popup(popup_html, max_width=300),
-        ).add_to(layer)
+            icon=DivIcon(html=LIGHTHOUSE_SVG),
+            popup=folium.Popup(f"<strong>{layer_name}</strong><br>{label}", max_width=320),
+        ).add_to(fg)
 
-    layer.add_to(m)
+    fg.add_to(m)
 
-# -----------------------------
+st.title("Interaktive Karte Berlin: Feuerwachen, Polizeiwachen, Schulen + Radiozone")
+
+with st.sidebar:
+    st.header("Einstellungen")
+    radius_km = st.slider("Radiozone (Radius in km)", 1, 20, 3, 1)
+    if st.button("Zentrum zurücksetzen"):
+        st.session_state["center"] = DEFAULT_CENTER
+        st.session_state["last_click"] = None
+
+# Session State
+if "center" not in st.session_state:
+    st.session_state["center"] = DEFAULT_CENTER
+if "last_click" not in st.session_state:
+    st.session_state["last_click"] = None
+
 # Karte bauen
-# -----------------------------
-m = folium.Map(location=st.session_state["center"], zoom_start=DEFAULT_ZOOM, control_scale=True, tiles=None)
+m = folium.Map(location=st.session_state["center"], zoom_start=DEFAULT_ZOOM, control_scale=True)
 
-# Basemap (OSM)
 folium.TileLayer(
     tiles="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
     attr="&copy; OpenStreetMap-Mitwirkende",
@@ -93,80 +88,38 @@ folium.TileLayer(
     control=False,
 ).add_to(m)
 
-# Leuchtturm-Icon (SVG)
-if ICON_PATH.exists():
-    lighthouse_icon = CustomIcon(str(ICON_PATH), icon_size=(26, 26), icon_anchor=(13, 26))
-else:
-    # Fallback: Standard-Marker, falls Icon fehlt
-    lighthouse_icon = None
-
-# Daten-Layer
+# Daten layern
 for layer_name, path in LAYER_SPECS:
     geo, err = load_geojson(path)
     if err:
         st.warning(err)
         continue
+    add_points(m, geo, layer_name)
 
-    if lighthouse_icon:
-        add_geojson_markers(m, geo, layer_name, lighthouse_icon)
-    else:
-        # Fallback ohne CustomIcon
-        layer = folium.FeatureGroup(name=layer_name, show=True)
-        for feat in geo.get("features", []):
-            geom = feat.get("geometry", {})
-            props = feat.get("properties", {}) or {}
-            if geom.get("type") != "Point":
-                continue
-            coords = geom.get("coordinates", [])
-            if not coords or len(coords) < 2:
-                continue
-            lon, lat = coords[0], coords[1]
-            label = props.get("name") or ""
-            folium.Marker(
-                location=(lat, lon),
-                popup=f"<strong>{layer_name}</strong><br>{label}",
-            ).add_to(layer)
-        layer.add_to(m)
-
-# Radiozone (Kreis)
+# Radiozone
 folium.Circle(
     location=st.session_state["center"],
-    radius=radius_km * 1000,  # Meter
-    color="#ff6600",
+    radius=radius_km * 1000,
+    weight=2,
     fill=True,
     fill_opacity=0.2,
-    weight=2,
     popup=f"Radiozone: {radius_km} km",
 ).add_to(m)
 
-# Klick-Handler-Hinweis (kleine Tooltip-Markierung am Zentrum)
-folium.Marker(
-    location=st.session_state["center"],
-    tooltip="Zentrum der Radiozone (klicken Sie irgendwo auf die Karte, um es zu ändern)",
-).add_to(m)
-
-# Layer Control
 folium.LayerControl(collapsed=False).add_to(m)
 
-# -----------------------------
-# Render + Interaktion
-# -----------------------------
-col1, col2 = st.columns([3, 1])
+# Rendern
+out = st_folium(m, height=720, key="map")  # key hilft gegen instabile Reruns
 
-with col1:
-    # st_folium liefert u.a. last_clicked zurück
-    out = st_folium(m, height=720, width=None)
+# Klick verarbeiten – nur wenn NEU (verhindert Loops)
+if out and out.get("last_clicked"):
+    lat = float(out["last_clicked"]["lat"])
+    lng = float(out["last_clicked"]["lng"])
+    new_click = (round(lat, 6), round(lng, 6))
 
-    # Wenn geklickt, Zentrum updaten
-    if out and out.get("last_clicked"):
-        lat = out["last_clicked"]["lat"]
-        lng = out["last_clicked"]["lng"]
+    if st.session_state["last_click"] != new_click:
+        st.session_state["last_click"] = new_click
         st.session_state["center"] = (lat, lng)
+        st.rerun()
 
-with col2:
-    st.subheader("Status")
-    st.write("Zentrum:", f"{st.session_state['center'][0]:.5f}, {st.session_state['center'][1]:.5f}")
-    st.write("Radius:", f"{radius_km} km")
-    st.caption("Hinweis: Die Radiozone ist eine grobe Visualisierung (Kreis).")
-
-st.caption("Datenquellen: GeoJSON-Dateien in /data. Basiskarte: OpenStreetMap.")
+st.caption("Daten: GeoJSON in /data (Koordinaten: [LON, LAT]). Basiskarte: OpenStreetMap.")
