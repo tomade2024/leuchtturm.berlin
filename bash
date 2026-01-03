@@ -1,8 +1,5 @@
-/karte-berlin/
- ├─ index.html
- ├─ icons/
- │   └─ lighthouse.svg
- └─ data/
-     ├─ feuerwehr.geojson
-     ├─ polizei.geojson
-     └─ schulen.geojson
+cd berlin-karte-streamlit
+python -m venv .venv
+source .venv/bin/activate   # Windows: .venv\Scripts\activate
+pip install -r requirements.txt
+streamlit run app.py
